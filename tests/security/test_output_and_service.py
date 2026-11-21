@@ -111,3 +111,37 @@ def test_audit_checkpoint_detects_truncation_and_rewrite():
         rewritten.log("e", i=i * 10)                               # consistent forged chain
     assert AuditLog.verify(rewritten.entries)                      # chain alone cannot tell...
     assert not AuditLog.verify(rewritten.entries, cp, key)         # ...the signed checkpoint can
+
+
+def test_tenant_comes_from_the_credential_not_the_request():
+    seen = []
+    def run(alert_id, raw, tenant=None):
+        seen.append(tenant)
+        return {"result": {"verdict": "needs_human"}}
+    tok_a, tok_b = "a" * 40, "b" * 40
+    jobs = JobManager(run)
+    srv = make_server(jobs, host="127.0.0.1", port=0, tenant_tokens={"acme": tok_a, "globex": tok_b},
+                      limiter=RateLimiter(rate_per_min=600, burst=100))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    hdr = lambda t: {"Authorization": f"Bearer {t}", "Content-Type": "application/json"}
+    try:
+        # A tenant field in the body is rejected outright.
+        spoof = json.dumps({"alert_id": "A-1", "raw_email": "From: a\n\nhi", "tenant_id": "globex"})
+        assert _req(port, "POST", "/triage", spoof, hdr(tok_a))[0] == 400
+        status, body = _req(port, "POST", "/triage", json.dumps({"alert_id": "A-1", "raw_email": "From: a\n\nhi"}), hdr(tok_a))
+        assert status == 202
+        jobs.shutdown()
+        assert seen == ["acme"]
+        # Another tenant cannot read acme's job, even with its id.
+        assert _req(port, "GET", f"/jobs/{body['job_id']}", None, hdr(tok_b))[0] == 404
+        assert _req(port, "GET", f"/jobs/{body['job_id']}", None, hdr(tok_a))[0] == 200
+    finally:
+        srv.shutdown()
+
+
+def test_tenants_must_have_distinct_strong_tokens():
+    with pytest.raises(ConfigError):
+        make_server(JobManager(lambda a, p: {}), port=0, tenant_tokens={"acme": "x" * 40, "globex": "x" * 40})
+    with pytest.raises(ConfigError):
+        make_server(JobManager(lambda a, p: {}), port=0, tenant_tokens={"acme": "short"})

@@ -17,7 +17,7 @@ from socagent.audit import AuditLog
 from socagent.factory import DATA, PROTECTED, build_agent
 from socagent.llm import ModelResponse, OpenAICompatibleModel, ScriptedModel, ToolCall
 from socagent.phishing import triage_phishing
-from socagent.respond import case_notes, respond
+from socagent.respond import dns_revalidator, case_notes, respond
 
 
 def scripted():
@@ -60,13 +60,20 @@ def scripted():
     ])
 
 
+LAB_SHARED_NETWORKS = ["151.101.0.0/16", "13.32.0.0/15", "10.0.0.0/8"]  # CDN, cloud, internal
+
+
 def main():
     model = OpenAICompatibleModel(os.environ["LLM_MODEL"]) if os.environ.get("LLM_MODEL") else scripted()
     audit = AuditLog()
     agent, _ = build_agent(model, audit=audit)
     raw = (DATA / "emails" / "credential_phish.eml").read_text()
     run, facts = triage_phishing(agent, "ALERT-1001", raw, PROTECTED)
-    outcome = respond(run.result, agent.registry, DenyAll(), ApprovalPolicy(), audit)  # shadow mode
+    # Shadow mode: DenyAll records every proposal without acting. The revalidator would run
+    # after approval and before execution; offline, nothing is resolved.
+    revalidate = dns_revalidator(resolve=lambda host: [], shared_networks=LAB_SHARED_NETWORKS)
+    outcome = respond(run.result, agent.registry, DenyAll(), ApprovalPolicy(), audit,
+                      verified_observables=run.verified_observables, revalidate=revalidate)
     print(case_notes(run.result, outcome))
     print(f"\nsteps={run.steps} tool_calls={len(run.tool_calls)} audit_ok={AuditLog.verify(audit.entries)}")
 

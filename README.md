@@ -1,4 +1,4 @@
-﻿# socagent
+# socagent
 
 Companion code for **AI Agents for Security Operations: Building Secure, Evidence-Grounded SOC Agents with Python** by Vaibhav Gondaliya.
 
@@ -13,7 +13,7 @@ git clone https://github.com/ProgVaibhav/socagent && cd socagent
 git checkout v1.0.0
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-pytest                               # 86 tests, no API key needed
+pytest                               # 96 tests, no API key needed
 python examples/phishing_demo.py     # offline replay of a full investigation
 python examples/run_evaluation.py    # measured results on the 50-case golden set
 ```
@@ -59,7 +59,7 @@ python examples/service.py
 | `socagent/tenancy.py` | 15 | Tenant context, tenant-keyed cache, per-tenant budgets |
 | `data/golden/` | 6, 12 | 50-case phishing golden set, retrieval cases, recorded results |
 | `data/redteam/injection_corpus.jsonl` | 11 | Prompt-injection payloads across email fields |
-| `tests/unit`, `tests/security`, `tests/evaluation` | all | 86 tests |
+| `tests/unit`, `tests/security`, `tests/evaluation` | all | 96 tests |
 
 ## Safety defaults
 
@@ -78,4 +78,4 @@ This is teaching code. It is deliberately small and readable, and it is not a ha
 
 ## Licence
 
-MIT for the code (see `LICENSE`). The book text is Â© Vaibhav Gondaliya, all rights reserved.
+MIT for the code (see `LICENSE`). The book text is © Vaibhav Gondaliya, all rights reserved.

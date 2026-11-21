@@ -5,7 +5,13 @@
 
 The service refuses to start without a token. For local experiments only:
     TRIAGE_INSECURE_LOCAL=1 python examples/service.py   (binds to 127.0.0.1)
+
+Multi-tenant (MSSP/MDR): give each customer's SOAR its own credential instead of one token:
+    TRIAGE_TENANT_TOKENS_FILE=/etc/socagent/tenant_tokens.json   # {"acme": "<token>", ...}
+The tenant is decided by which credential authenticated, never by the request body, and its
+TenantContext (protected domains, budgets, runbooks) comes from the server-side TENANTS map.
 """
+import json
 import os
 import sys
 from pathlib import Path
@@ -13,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from socagent.audit import AuditLog
-from socagent.factory import PROTECTED, build_agent
+from socagent.factory import LAB_TENANT, build_agent
 from socagent.jobs import JobManager
 from socagent.llm import OpenAICompatibleModel
 from socagent.phishing import triage_phishing
@@ -23,9 +29,15 @@ from socagent.tools.intel import IntelSource
 INTEL = IntelSource()
 
 
-def run_triage(alert_id: str, raw_email: str) -> dict:
-    agent, _ = build_agent(OpenAICompatibleModel(os.environ["LLM_MODEL"]), audit=AuditLog("audit.jsonl"))
-    run, _ = triage_phishing(agent, alert_id, raw_email, PROTECTED, INTEL)
+# Server-side tenant registry: authenticated tenant id -> its context. Never built from input.
+TENANTS = {LAB_TENANT.tenant_id: LAB_TENANT}
+
+
+def run_triage(alert_id: str, raw_email: str, tenant: str | None = None) -> dict:
+    ctx = LAB_TENANT if tenant is None else TENANTS[tenant]   # unknown tenant: job fails closed
+    agent, _ = build_agent(OpenAICompatibleModel(os.environ["LLM_MODEL"]),
+                           audit=AuditLog("audit.jsonl"), tenant=ctx)
+    run, _ = triage_phishing(agent, alert_id, raw_email, list(ctx.protected_domains), INTEL)
     return {"result": run.result.model_dump(mode="json"), "steps": run.steps,
             "stopped_because": run.stopped_because}
 
@@ -34,6 +46,8 @@ if __name__ == "__main__":
     insecure = os.environ.get("TRIAGE_INSECURE_LOCAL") == "1"
     server = make_server(JobManager(run_triage, max_workers=int(os.environ.get("TRIAGE_WORKERS", 4))),
                          token=os.environ.get("TRIAGE_API_TOKEN"),
+                         tenant_tokens=(json.loads(Path(os.environ["TRIAGE_TENANT_TOKENS_FILE"]).read_text())
+                                        if os.environ.get("TRIAGE_TENANT_TOKENS_FILE") else None),
                          host="127.0.0.1" if insecure else os.environ.get("HOST", "0.0.0.0"),
                          port=int(os.environ.get("PORT", 8080)), allow_insecure_local=insecure)
     server.serve_forever()

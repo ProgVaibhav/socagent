@@ -46,32 +46,55 @@ class RateLimiter:
             return ok
 
 
-def make_server(jobs: JobManager, token: str | None, host: str = "127.0.0.1", port: int = 8080,
-                allow_insecure_local: bool = False, limiter: RateLimiter | None = None) -> ThreadingHTTPServer:
-    if not token:
+def make_server(jobs: JobManager, token: str | None = None, host: str = "127.0.0.1", port: int = 8080,
+                allow_insecure_local: bool = False, limiter: RateLimiter | None = None,
+                tenant_tokens: dict[str, str] | None = None,
+                default_tenant: str | None = None) -> ThreadingHTTPServer:
+    """Authentication decides the tenant; the request body never does.
+
+    Single-tenant: `token` (one credential), jobs run for `default_tenant`.
+    Multi-tenant: `tenant_tokens` maps tenant id -> that tenant's own credential, issued to
+    that customer's SOAR. The tenant is whichever credential matched. A body that carries a
+    tenant field is rejected like any other unexpected field."""
+    if token and tenant_tokens:
+        raise ConfigError("use either token or tenant_tokens, not both")
+    creds: dict[str, str | None] = dict(tenant_tokens or {})
+    if token:
+        creds = {default_tenant: token}       # tenant None = single-tenant deployment
+    if not creds:
         if not (allow_insecure_local and host in LOOPBACK):
             raise ConfigError("TRIAGE_API_TOKEN is required. Unauthenticated mode is only allowed "
                               "with allow_insecure_local=True on a loopback address.")
-    elif len(token) < 32:
-        raise ConfigError("TRIAGE_API_TOKEN must be at least 32 characters")
+    for tenant_id, t in creds.items():
+        if not t or len(t) < 32:
+            raise ConfigError(f"token for tenant '{tenant_id}' must be at least 32 characters")
+    if len(set(creds.values())) != len(creds):
+        raise ConfigError("every tenant needs its own token")
     limiter = limiter or RateLimiter()
-    expected = f"Bearer {token}".encode() if token else None
+    expected = {tenant_id: f"Bearer {t}".encode() for tenant_id, t in creds.items()}
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):  # do not echo request lines (may contain ids) to stderr
             pass
 
-        def _authorised(self) -> bool:
-            if expected is None:
-                return True  # only reachable in loopback dev mode, enforced above
+        def _authenticate(self) -> tuple[bool, str | None]:
+            """(authenticated, tenant). Compares against every credential so timing does not
+            reveal which tenants exist."""
+            if not expected:
+                return True, default_tenant       # loopback dev mode only, enforced above
             got = (self.headers.get("Authorization") or "").encode()
-            return hmac.compare_digest(got, expected)
+            ok, tenant = False, None
+            for tenant_id, cred in expected.items():
+                if hmac.compare_digest(got, cred):
+                    ok, tenant = True, tenant_id
+            return ok, tenant
 
         def _guard(self) -> bool:
             if not limiter.allow(self.client_address[0]):
                 self._send(429, {"error": "rate limited"})
                 return False
-            if not self._authorised():
+            ok, self.tenant = self._authenticate()
+            if not ok:
                 self._send(401, {"error": "unauthorised"})
                 return False
             return True
@@ -99,7 +122,7 @@ def make_server(jobs: JobManager, token: str | None, host: str = "127.0.0.1", po
                     or not isinstance(body["alert_id"], str) or not ALERT_ID.match(body["alert_id"])
                     or not isinstance(body["raw_email"], str) or not body["raw_email"].strip()):
                 return self._send(400, {"error": "expected exactly {alert_id, raw_email}"})
-            job = jobs.submit(body["alert_id"], body["raw_email"])
+            job = jobs.submit(body["alert_id"], body["raw_email"], tenant=self.tenant)
             self._send(202, {"job_id": job.id, "status": job.status})
 
         def do_GET(self):
@@ -110,7 +133,7 @@ def make_server(jobs: JobManager, token: str | None, host: str = "127.0.0.1", po
             if not self.path.startswith("/jobs/"):
                 return self._send(404, {"error": "not found"})
             job = jobs.get(self.path.rsplit("/", 1)[-1])
-            if job is None:
+            if job is None or job.tenant != self.tenant:   # another tenant's job does not exist
                 return self._send(404, {"error": "unknown job"})
             payload = {"job_id": job.id, "alert_id": job.alert_id, "status": job.status}
             if job.result:

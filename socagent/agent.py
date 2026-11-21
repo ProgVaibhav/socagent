@@ -42,6 +42,31 @@ class AgentRun:
     output_tokens: int = 0
     stopped_because: str = "submitted"
     retrieved_runbooks: set[str] = field(default_factory=set)
+    # Observables that code extracted before the model ran (e.g. from the email headers).
+    trusted_observables: set[str] = field(default_factory=set)
+    # Observables in the accepted result that were matched EXACTLY against code facts or
+    # against a value in a tool call that happened. Only these may become response targets.
+    verified_observables: set[str] = field(default_factory=set)
+
+
+def _key(value: Any) -> str:
+    return str(value).strip().lower()
+
+
+def _leaf_values(obj: Any) -> set[str]:
+    """Every scalar value inside a tool call's arguments or output, as exact match keys.
+    Structured values only: '1.2.3.4' matches a field holding '1.2.3.4', never a field
+    holding '11.2.3.45' or a sentence that happens to contain it."""
+    out: set[str] = set()
+    if isinstance(obj, dict):
+        for v in obj.values():
+            out |= _leaf_values(v)
+    elif isinstance(obj, (list, tuple, set)):
+        for v in obj:
+            out |= _leaf_values(v)
+    elif obj is not None and not isinstance(obj, bool):
+        out.add(_key(obj))
+    return out
 
 
 class Agent:
@@ -56,6 +81,7 @@ class Agent:
         max_tool_calls: int = 25,
         token_budget: int = 150_000,
         max_seconds: float = 300.0,
+        tool_timeout: float = 30.0,
         expose_up_to: Permission = Permission.READ,
         tenant_id: str | None = None,
     ):
@@ -68,6 +94,7 @@ class Agent:
         self.max_tool_calls = max_tool_calls
         self.token_budget = token_budget
         self.max_seconds = max_seconds
+        self.tool_timeout = tool_timeout
         self.expose_up_to = expose_up_to  # triage agents see read-only tools by default
         self.tenant_id = tenant_id
 
@@ -82,8 +109,12 @@ class Agent:
         }]
 
     # -- public entry point: the failure boundary -----------------------------
-    def run(self, alert_id: str, system: str, user: str) -> AgentRun:
-        run = AgentRun(result=_fallback(alert_id, "not started"), steps=0)
+    def run(self, alert_id: str, system: str, user: str,
+            trusted_observables: Any = None) -> AgentRun:
+        """`trusted_observables`: indicators code extracted before the model ran. Evidence
+        citing source "facts" or "alert" may only name an observable from this set."""
+        run = AgentRun(result=_fallback(alert_id, "not started"), steps=0,
+                       trusted_observables={_key(o) for o in (trusted_observables or []) if o})
         try:
             return self._run(run, alert_id, system, user)
         except ModelError as e:
@@ -177,11 +208,24 @@ class Agent:
         # Write the intent BEFORE the action: if the audit write fails, the action never runs.
         self._audit("tool_call_start", tool=name, arguments=arguments)
         try:
-            output = tool.run(arguments)
+            output = self._run_tool(tool, arguments)
         except Exception as e:  # a failing tool must not kill the investigation
             output = {"error": type(e).__name__, "message": str(e)[:300]}
         self._audit("tool_call", tool=name, output=truncate(output, 1000))
         return output
+
+    def _run_tool(self, tool, arguments: dict[str, Any]) -> Any:
+        """Run one tool with its own timeout, so a hung lookup cannot hold the run past its
+        deadline. Python cannot kill a thread: a timed-out tool keeps running in the background,
+        so tools must also set timeouts on their own network calls. The agent stops waiting."""
+        import concurrent.futures as cf
+        pool = cf.ThreadPoolExecutor(max_workers=1)
+        try:
+            return pool.submit(tool.run, arguments).result(timeout=self.tool_timeout)
+        except cf.TimeoutError:
+            return {"error": "TimeoutError", "message": f"tool did not answer within {self.tool_timeout}s"}
+        finally:
+            pool.shutdown(wait=False)
 
     def _try_submit(self, alert_id: str, arguments: dict[str, Any], run: AgentRun) -> TriageResult | str:
         if not isinstance(arguments, dict):
@@ -200,27 +244,32 @@ class Agent:
         if problems:
             self._audit("submit_rejected", problems=problems)
             return json.dumps({"error": "submission rejected, fix and resubmit", "problems": problems})
+        # Every observable has now been matched exactly; record them for the response gate.
+        run.verified_observables = {e.observable.strip() for e in result.evidence if e.observable}
         return result
 
     @staticmethod
     def _provenance_problems(result: TriageResult, run: AgentRun) -> list[str]:
-        """Every claim must point at something that actually happened in this run."""
+        """Every claim must point at something that actually happened in this run, and every
+        observable must match EXACTLY a value that code extracted or a tool call contained."""
         calls = {c["id"]: c for c in run.tool_calls}
         problems = []
         for i, ev in enumerate(result.evidence):
             if ev.source_tool in CODE_ONLY_SOURCES:
                 problems.append(f"evidence[{i}]: source '{ev.source_tool}' is reserved for code")
             elif ev.source_tool in MODEL_STATIC_SOURCES:
-                continue
+                if ev.observable and _key(ev.observable) not in run.trusted_observables:
+                    problems.append(f"evidence[{i}]: observable '{ev.observable}' is not among the "
+                                    f"indicators code extracted for this alert")
             else:
                 call = calls.get(ev.tool_call_id or "")
                 if call is None or call["name"] != ev.source_tool:
                     problems.append(f"evidence[{i}]: no call to '{ev.source_tool}' with "
                                     f"tool_call_id '{ev.tool_call_id}' in this run")
-                elif ev.observable and ev.observable.lower() not in json.dumps(
-                        [call["arguments"], call["output"]], default=str).lower():
-                    problems.append(f"evidence[{i}]: observable '{ev.observable}' does not appear "
-                                    f"in call {ev.tool_call_id}")
+                elif ev.observable and _key(ev.observable) not in (
+                        _leaf_values(call["arguments"]) | _leaf_values(call["output"])):
+                    problems.append(f"evidence[{i}]: observable '{ev.observable}' is not a value "
+                                    f"in the arguments or output of call {ev.tool_call_id}")
         stray = [r for r in result.runbook_refs if r not in run.retrieved_runbooks]
         if stray:
             problems.append(f"runbook_refs not returned by search_runbooks in this run: {stray}")

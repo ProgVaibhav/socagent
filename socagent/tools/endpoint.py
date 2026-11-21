@@ -141,30 +141,58 @@ def _haversine_km(a: dict[str, Any], b: dict[str, Any]) -> float:
     return 2 * r * math.asin(math.sqrt(h))
 
 
+def _utc(t: datetime) -> datetime:
+    """Normalised input contract: times are UTC. A naive datetime is treated as UTC; an aware
+    one is converted. Mixing local times from different log sources breaks every window."""
+    from datetime import timezone
+    return t.replace(tzinfo=timezone.utc) if t.tzinfo is None else t.astimezone(timezone.utc)
+
+
 def impossible_travel(logins: list[dict[str, Any]], max_kmh: float = 900.0,
                       known_egress_ips: list[str] | None = None) -> dict[str, Any]:
-    """Compare consecutive sign-ins PER USER. Never pair sign-ins of different users."""
+    """Compare consecutive sign-ins PER USER. Never pair sign-ins of different users.
+
+    Sign-ins from known corporate VPN or cloud egress addresses are KEPT and labelled, not
+    dropped: their geolocation is unreliable, so a pair involving one is reported separately
+    as weak evidence, but the event itself (account, device, session) may still matter."""
     egress = set(known_egress_ips or [])
     by_user: dict[str, list[dict[str, Any]]] = {}
     for l in logins:
-        if l["ip"] not in egress:
-            by_user.setdefault(l["user"].lower(), []).append(l)
-    pairs = []
+        by_user.setdefault(l["user"].lower(), []).append({**l, "time": _utc(l["time"]),
+                                                          "known_egress": l["ip"] in egress})
+    pairs, weak_pairs = [], []
     for user, items in by_user.items():
         items.sort(key=lambda x: x["time"])
         for a, b in zip(items, items[1:]):
             km = _haversine_km(a, b)
             hours = max((b["time"] - a["time"]).total_seconds() / 3600, 1 / 60)
             if km / hours > max_kmh:
-                pairs.append({"user": user, "from": a["country"], "to": b["country"], "km": round(km),
-                              "hours": round(hours, 2), "kmh": round(km / hours)})
-    return {"impossible": bool(pairs), "pairs": pairs, "excluded_egress_ips": sorted(egress),
-            "note": "VPNs and cloud egress cause false positives; check the IPs' ASN before acting."}
+                pair = {"user": user, "from": a["country"], "to": b["country"], "km": round(km),
+                        "hours": round(hours, 2), "kmh": round(km / hours),
+                        "from_ip": a["ip"], "to_ip": b["ip"]}
+                if a["known_egress"] or b["known_egress"]:
+                    pair["why_weak"] = "one sign-in came through known VPN or cloud egress"
+                    weak_pairs.append(pair)
+                else:
+                    pairs.append(pair)
+    return {"impossible": bool(pairs), "pairs": pairs, "weak_pairs": weak_pairs,
+            "known_egress_sign_ins": sum(1 for v in by_user.values() for l in v if l["known_egress"]),
+            "note": "Geolocation is weak evidence. Check ASN, device, session and authentication "
+                    "method before acting; known egress lowers the weight of travel, not of the sign-in."}
+
+
+# Normalised MFA push results. Map your identity provider's values onto these BEFORE calling
+# the tool; anything else ("cancelled", "error", "interrupted", "fraud_reported" handled
+# separately) is not counted as a prompt the user received and rejected or ignored.
+#   approved - the user approved the push
+#   denied   - the user rejected the push
+#   timeout  - the push was delivered and expired unanswered
+PROMPT_RESULTS = {"denied", "timeout"}
 
 
 class MfaEvent(BaseModel):
     user: str
-    time: datetime
+    time: datetime           # UTC; naive values are treated as UTC
     result: str = Field(pattern="^(approved|denied|timeout)$")
     request_id: str | None = None   # IdP correlation id for the sign-in attempt, if available
 
@@ -188,12 +216,16 @@ def mfa_push_burst(events: list[dict[str, Any]], window_minutes: int = 10, thres
     from datetime import timedelta
 
     by_user: dict[str, list[dict[str, Any]]] = {}
+    ignored = 0
     for e in events:
-        by_user.setdefault(e["user"].lower(), []).append(e)
+        if e["result"] not in PROMPT_RESULTS and e["result"] != "approved":
+            ignored += 1      # unknown or provider-specific state: never counted as a prompt
+            continue
+        by_user.setdefault(e["user"].lower(), []).append({**e, "time": _utc(e["time"])})
     bursts = []
     for user, ev in by_user.items():
         ev.sort(key=lambda e: e["time"])
-        prompts = [e for e in ev if e["result"] != "approved"]
+        prompts = [e for e in ev if e["result"] in PROMPT_RESULTS]
         best, start = (0, 0, -1), 0
         for end in range(len(prompts)):
             while prompts[end]["time"] - prompts[start]["time"] > timedelta(minutes=window_minutes):
@@ -230,6 +262,7 @@ def mfa_push_burst(events: list[dict[str, Any]], window_minutes: int = 10, thres
     return {"bursts": bursts, "burst": bool(bursts), "max_pushes_in_window": worst,
             "approved_after_burst": any(b["approved_after_burst"] for b in bursts),
             "approval_correlation": best_corr,
+            "ignored_events": ignored,
             "note": ("A 'temporal' link means same user and time window only: do not describe it as "
                      "confirmed approval of the same sign-in attempt." if best_corr == "temporal" else ""),
             "technique": "T1621" if bursts else None}

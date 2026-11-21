@@ -48,19 +48,29 @@ class ResponseOutcome:
     skipped: list[dict[str, Any]] = field(default_factory=list)
 
 
-def supported_targets(result: TriageResult) -> set[str]:
-    """Observables backed by tool evidence (provenance was verified by the agent loop)."""
-    return {normalise_target(e.observable) for e in result.evidence
-            if e.observable and e.source_tool not in ("guardrail", "reviewer", "agent")}
+def _key(value: str) -> str:
+    return str(value).strip().lower()
 
 
-def gate(result: TriageResult, action, min_model_confidence: float) -> str | None:
+def supported_targets(result: TriageResult, verified_observables: set[str]) -> set[str]:
+    """Exact observables that BOTH appear in the result's evidence AND were verified by the
+    agent loop: matched exactly against code-extracted facts or a value in a real tool call
+    (AgentRun.verified_observables). Nothing the model merely wrote qualifies."""
+    verified = {_key(v) for v in verified_observables}
+    return {_key(e.observable) for e in result.evidence
+            if e.observable and e.source_tool not in ("guardrail", "reviewer", "agent")
+            and _key(e.observable) in verified}
+
+
+def gate(result: TriageResult, action, min_model_confidence: float,
+         verified_observables: set[str]) -> str | None:
     """Deterministic reasons NOT to put an action in front of a human. None = proceed."""
-    target = normalise_target(action.target)
     if result.verdict not in ACTIONABLE:
         return f"verdict is {result.verdict.value}"
-    if target not in supported_targets(result):
-        return "target is not an observable in verified evidence"
+    # Exact match first; normalise only once the exact source value is established.
+    if _key(action.target) not in supported_targets(result, verified_observables):
+        return "target is not exactly an observable in verified evidence"
+    target = normalise_target(action.target)
     if any(target == n or target.endswith("." + n) for n in NEVER_BLOCK):
         return "target is shared infrastructure on the never-block list"
     if result.confidence < min_model_confidence:
@@ -96,18 +106,51 @@ def dns_revalidator(resolve: Callable[[str], list[str]],
     return check
 
 
+def host_revalidator(lookup: Callable[[str], list[dict[str, Any]]]) -> Revalidator:
+    """For host actions: the hostname must still map to exactly one managed device.
+    `lookup` queries your EDR or asset inventory and returns matching device records."""
+    def check(action: str, target: str) -> str | None:
+        if action != "isolate_host":
+            return None
+        try:
+            devices = lookup(normalise_target(target))
+        except Exception:
+            return "asset inventory unavailable"
+        if len(devices) != 1:
+            return f"hostname matches {len(devices)} devices, not exactly one"
+        return None
+    return check
+
+
+def combine(*checks: Revalidator) -> Revalidator:
+    """Run several revalidators; the first reason to abort wins."""
+    def check(action: str, target: str) -> str | None:
+        for c in checks:
+            reason = c(action, target)
+            if reason:
+                return reason
+        return None
+    return check
+
+
 def respond(result: TriageResult, registry: ToolRegistry, approver: Approver,
-            policy: ApprovalPolicy, audit: AuditLog, min_model_confidence: float = 0.8,
-            revalidate: Revalidator | None = None) -> ResponseOutcome:
-    """`revalidate` runs AFTER approval and immediately BEFORE execution: the world can
-    change between proposal and action (DNS, DHCP, asset reassignment)."""
+            policy: ApprovalPolicy, audit: AuditLog, *, verified_observables: set[str],
+            revalidate: Revalidator, min_model_confidence: float = 0.8) -> ResponseOutcome:
+    """Both keyword arguments are REQUIRED; there is no unsafe default.
+
+    `verified_observables` comes from AgentRun.verified_observables.
+    `revalidate` runs AFTER approval and immediately BEFORE execution, for every action:
+    the world can change between proposal and action (DNS, DHCP, asset reassignment).
+    If it raises or returns a reason, the action does not run (fail closed)."""
+    if revalidate is None:
+        raise ValueError("respond() requires a revalidator; see dns_revalidator and host_revalidator")
     out = ResponseOutcome()
     for action in result.proposed_actions:
         tool = registry.get(action.action)
         if tool is None or action.action not in ARG_BUILDERS:
             out.skipped.append({"action": action.action, "why": "no executor"})
             continue
-        why = gate(result, action, min_model_confidence)
+        why = gate(result, action, min_model_confidence, verified_observables)
         if why:
             out.skipped.append({"action": action.action, "target": action.target, "why": why})
             continue
@@ -128,16 +171,15 @@ def respond(result: TriageResult, registry: ToolRegistry, approver: Approver,
                 if not decision.approved:
                     out.denied.append({"action": action.action, "target": action.target, "by": decision.approver})
                     continue
-            if revalidate is not None:
-                try:
-                    stale = revalidate(action.action, action.target)
-                except Exception:
-                    stale = "revalidation failed"
-                if stale:
-                    audit.log("action_aborted", tool=action.action, arguments=args, reason=stale)
-                    out.skipped.append({"action": action.action, "target": action.target,
-                                        "why": f"revalidation before execution: {stale}"})
-                    continue
+            try:
+                stale = revalidate(action.action, action.target)
+            except Exception:
+                stale = "revalidation failed"
+            if stale:
+                audit.log("action_aborted", tool=action.action, arguments=args, reason=stale)
+                out.skipped.append({"action": action.action, "target": action.target,
+                                    "why": f"revalidation before execution: {stale}"})
+                continue
             audit.log("action_executing", tool=action.action, arguments=args)   # intent first
         except Exception:
             out.skipped.append({"action": action.action, "target": action.target,

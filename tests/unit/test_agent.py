@@ -15,6 +15,9 @@ from socagent.tools.email_tools import lookalike_score, parse_email
 from socagent.tools.endpoint import analyze_process_tree, impossible_travel, mfa_push_burst
 from socagent.tools.registry import Permission
 
+# Observables the agent loop verified exactly (AgentRun.verified_observables).
+VERIFIED = {"examp1e-corp.com", "secure-examplecorp-login.net", "cdn.cloudfront.net"}
+
 PHISH = (DATA / "emails" / "credential_phish.eml").read_text()
 NEWS = (DATA / "emails" / "vendor_newsletter.eml").read_text()
 
@@ -139,9 +142,9 @@ def test_respond_requires_approval_for_containment():
     result = TriageResult.model_validate({**MALICIOUS_SUBMIT, "alert_id": "A-6"})
     reg, log = build_registry()
     audit = AuditLog()
-    denied = respond(result, reg, DenyAll(), ApprovalPolicy(), audit)
+    denied = respond(result, reg, DenyAll(), ApprovalPolicy(), audit, verified_observables=VERIFIED, revalidate=lambda a, t: None)
     assert denied.denied and not log.executed
-    approved = respond(result, reg, CallbackApprover(lambda r: True, "analyst:priya"), ApprovalPolicy(), audit)
+    approved = respond(result, reg, CallbackApprover(lambda r: True, "analyst:priya"), ApprovalPolicy(), audit, verified_observables=VERIFIED, revalidate=lambda a, t: None)
     assert log.executed[0]["action"] == "block_indicator"
     assert approved.executed and "block_indicator" in case_notes(result, approved)
     assert AuditLog.verify(audit.entries)
@@ -152,7 +155,7 @@ def test_respond_gates_on_evidence_not_model_confidence():
     result = TriageResult.model_validate({**MALICIOUS_SUBMIT, "alert_id": "A-7", "proposed_actions": [
         {"action": "block_indicator", "target": "cdn.cloudfront.net", "reason": "image host in the footer"}]})
     reg, log = build_registry()
-    out = respond(result, reg, CallbackApprover(lambda r: True), ApprovalPolicy(), AuditLog())
+    out = respond(result, reg, CallbackApprover(lambda r: True), ApprovalPolicy(), AuditLog(), verified_observables=VERIFIED, revalidate=lambda a, t: None)
     assert not out.executed and "verified evidence" in out.skipped[0]["why"]
 
 
@@ -209,7 +212,16 @@ def test_impossible_travel_is_per_user():
         {"user": "priya", "time": t0, "lat": 23.02, "lon": 72.57, "country": "IN", "ip": "1.1.1.1"},
         {"user": "priya", "time": t0 + timedelta(hours=1), "lat": 52.52, "lon": 13.40, "country": "DE", "ip": "9.9.9.9"},
     ], known_egress_ips=["9.9.9.9"])
-    assert not vpn["impossible"]
+    # Known egress is kept and labelled as weak evidence, not silently dropped.
+    assert not vpn["impossible"] and len(vpn["weak_pairs"]) == 1
+    assert vpn["known_egress_sign_ins"] == 1
+
+
+def test_mfa_counts_only_defined_prompt_states():
+    t0 = datetime(2026, 11, 19, 8, 0)
+    noise = [{"user": "priya", "time": t0 + timedelta(minutes=i), "result": "cancelled"} for i in range(8)]
+    r = mfa_push_burst(noise)
+    assert not r["burst"] and r["ignored_events"] == 8
 
 
 def test_mfa_burst_links_approval_to_the_same_user_and_burst():
@@ -275,15 +287,15 @@ def test_action_is_revalidated_immediately_before_execution():
     moved = dns_revalidator(lambda host: ["151.101.1.10"], shared_networks=["151.101.0.0/16"])
     reg, log = build_registry()
     audit = AuditLog()
-    out = respond(result, reg, approve, ApprovalPolicy(), audit, revalidate=moved)
+    out = respond(result, reg, approve, ApprovalPolicy(), audit, verified_observables=VERIFIED, revalidate=moved)
     assert not log.executed and "revalidation" in out.skipped[0]["why"]
     assert any(e["event"] == "action_aborted" for e in audit.entries)
     # Name no longer resolves: also do not act.
     gone = dns_revalidator(lambda host: (_ for _ in ()).throw(OSError("NXDOMAIN")), ["151.101.0.0/16"])
     reg, log = build_registry()
-    assert not respond(result, reg, approve, ApprovalPolicy(), AuditLog(), revalidate=gone).executed
+    assert not respond(result, reg, approve, ApprovalPolicy(), AuditLog(), verified_observables=VERIFIED, revalidate=gone).executed
     # Unchanged and outside shared ranges: proceed.
     ok = dns_revalidator(lambda host: ["203.0.113.7"], ["151.101.0.0/16"])
     reg, log = build_registry()
-    assert respond(result, reg, approve, ApprovalPolicy(), AuditLog(), revalidate=ok).executed
+    assert respond(result, reg, approve, ApprovalPolicy(), AuditLog(), verified_observables=VERIFIED, revalidate=ok).executed
     assert target

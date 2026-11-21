@@ -128,3 +128,24 @@ def test_reviewer_failure_is_never_a_pass_and_never_relaxes():
     assert apply_review(benign, rev).verdict == Verdict.NEEDS_HUMAN             # unconfirmed benign escalates
     junk = review(benign, ScriptedModel([ModelResponse("looks fine to me")]))
     assert junk.error and apply_review(benign, junk).verdict == Verdict.NEEDS_HUMAN
+
+
+def test_cloud_mappings_do_not_overstate_single_events():
+    base = {"eventSource": "s3.amazonaws.com", "userIdentity": {"type": "IAMUser", "userName": "dev"},
+            "sourceIPAddress": "203.0.113.9", "errorCode": None}
+    pab = analyze_cloudtrail_event({**base, "eventName": "DeletePublicAccessBlock"})
+    assert pab["observed_techniques"] == [] and pab["suspected_techniques"] == []
+    assert pab["findings"][0]["status"] == "precursor" and "T1530" in pab["findings"][0]["needs"]
+    snap = analyze_cloudtrail_event({**base, "eventName": "ModifySnapshotAttribute"})
+    assert snap["observed_techniques"] == [] and snap["suspected_techniques"] == ["T1537"]
+    stop = analyze_cloudtrail_event({**base, "eventName": "StopLogging"})
+    assert stop["observed_techniques"] == ["T1562.008"]
+    refused = analyze_cloudtrail_event({**base, "eventName": "StopLogging", "errorCode": "AccessDenied"})
+    assert refused["observed_techniques"] == [] and refused["succeeded"] is False
+
+
+def test_offline_access_alone_is_not_high_risk():
+    alone = score_oauth_consent("Calendar Sync", True, ["User.Read", "offline_access"], 900, 400)
+    assert alone["assessment"] == "low" and alone["attack"] is None
+    combo = score_oauth_consent("PDF Helper", False, ["Mail.Read", "offline_access"], 3, 1)
+    assert any("refresh tokens" in r for r in combo["reasons"])

@@ -14,6 +14,9 @@ from socagent.llm import ModelError, ModelResponse, OpenAICompatibleModel, Scrip
 from socagent.respond import respond
 from socagent.schemas import TriageResult
 
+# Observables the agent loop verified exactly (AgentRun.verified_observables).
+VERIFIED = {"examp1e-corp.com", "secure-examplecorp-login.net", "cdn.cloudfront.net"}
+
 
 class RaisingModel:
     def __init__(self, exc):
@@ -94,7 +97,7 @@ def test_no_action_without_audit():
         "proposed_actions": [{"action": "block_indicator", "target": "examp1e-corp.com",
                               "reason": "known credential phishing domain"}]})
     reg, log = build_registry()
-    out = respond(result, reg, CallbackApprover(lambda r: True), ApprovalPolicy(), BrokenAudit())
+    out = respond(result, reg, CallbackApprover(lambda r: True), ApprovalPolicy(), BrokenAudit(), verified_observables=VERIFIED, revalidate=lambda a, t: None)
     assert log.executed == [] and "audit" in out.skipped[0]["why"]
 
 
@@ -110,7 +113,7 @@ def test_approver_outage_is_a_denial():
         "proposed_actions": [{"action": "block_indicator", "target": "examp1e-corp.com",
                               "reason": "known credential phishing domain"}]})
     reg, log = build_registry()
-    out = respond(result, reg, CallbackApprover(explode), ApprovalPolicy(), AuditLog())
+    out = respond(result, reg, CallbackApprover(explode), ApprovalPolicy(), AuditLog(), verified_observables=VERIFIED, revalidate=lambda a, t: None)
     assert log.executed == [] and out.denied[0]["by"] == "approval-service-unavailable"
 
 
@@ -140,3 +143,99 @@ def test_model_cannot_use_code_only_sources():
     agent, _ = build_agent(model)
     run = agent.run("F-7", "sys", "user")   # rejected, then script runs out -> fail safe
     assert run.result.verdict == Verdict.NEEDS_HUMAN
+
+
+def _phish_agent(evidence, actions=None):
+    from socagent.phishing import triage_phishing
+    from socagent.factory import DATA, PROTECTED
+    submit = {"verdict": "malicious", "confidence": 0.95, "severity": "high",
+              "summary": "Credential phishing from a lookalike domain; block it.",
+              "evidence": evidence, "attack_techniques": ["T1566.002"],
+              "proposed_actions": actions or [], "runbook_refs": []}
+    model = ScriptedModel([
+        ModelResponse(None, [ToolCall("1", "domain_reputation", {"domain": "examp1e-corp.com"})]),
+        ModelResponse(None, [ToolCall("2", "submit_triage", submit)]),
+        ModelResponse(None, [ToolCall("3", "submit_triage", submit)]),
+    ])
+    agent, log = build_agent(model)
+    agent.max_steps = 3
+    raw = (DATA / "emails" / "credential_phish.eml").read_text()
+    run, facts = triage_phishing(agent, "P-1", raw, PROTECTED)
+    return run, log
+
+
+def test_facts_evidence_cannot_name_an_arbitrary_observable():
+    # The model cites "facts" for a target code never extracted: rejected, so no verdict.
+    run, _ = _phish_agent([{"claim": "the email mentions this host", "source_tool": "facts",
+                            "observable": "payroll.example-corp.com"}],
+                          [{"action": "block_indicator", "target": "payroll.example-corp.com",
+                            "reason": "phishing"}])
+    assert run.result.verdict.value == "needs_human"
+    assert "payroll.example-corp.com" not in run.verified_observables
+
+
+def test_tool_observable_must_match_exactly_not_as_substring():
+    # 'corp.com' is a substring of the domain_reputation output, but not a value in it.
+    run, _ = _phish_agent([{"claim": "reputation says malicious", "source_tool": "domain_reputation",
+                            "observable": "corp.com", "tool_call_id": "1"}])
+    assert run.result.verdict.value == "needs_human"
+
+
+def test_only_exactly_verified_observables_become_response_targets():
+    run, log = _phish_agent([{"claim": "lookalike registered this week", "source_tool": "domain_reputation",
+                              "observable": "examp1e-corp.com", "tool_call_id": "1"}],
+                            [{"action": "block_indicator", "target": "examp1e-corp.com",
+                              "reason": "lookalike credential phishing domain"}])
+    assert run.verified_observables == {"examp1e-corp.com"}
+    reg, rlog = build_registry()
+    ok = respond(run.result, reg, CallbackApprover(lambda r: True), ApprovalPolicy(), AuditLog(),
+                 verified_observables=run.verified_observables, revalidate=lambda a, t: None)
+    assert ok.executed
+    reg, rlog = build_registry()
+    none = respond(run.result, reg, CallbackApprover(lambda r: True), ApprovalPolicy(), AuditLog(),
+                   verified_observables=set(), revalidate=lambda a, t: None)
+    assert not none.executed and "verified evidence" in none.skipped[0]["why"]
+
+
+def test_revalidation_is_mandatory_and_fails_closed():
+    import pytest
+    result = TriageResult.model_validate({
+        "alert_id": "F-9", "verdict": "malicious", "confidence": 0.95, "severity": "high",
+        "summary": "Known credential phishing domain, block it now please.",
+        "evidence": [{"claim": "known bad", "source_tool": "domain_reputation",
+                      "observable": "examp1e-corp.com", "tool_call_id": "c1"}],
+        "proposed_actions": [{"action": "block_indicator", "target": "examp1e-corp.com",
+                              "reason": "known credential phishing domain"}]})
+    reg, log = build_registry()
+    with pytest.raises(TypeError):
+        respond(result, reg, CallbackApprover(lambda r: True), ApprovalPolicy(), AuditLog(),
+                verified_observables={"examp1e-corp.com"})
+    def broken(action, target):
+        raise TimeoutError("DNS resolver down")
+    out = respond(result, reg, CallbackApprover(lambda r: True), ApprovalPolicy(), AuditLog(),
+                  verified_observables={"examp1e-corp.com"}, revalidate=broken)
+    assert log.executed == [] and "revalidation" in out.skipped[0]["why"]
+
+
+def test_hung_tool_times_out_and_run_continues():
+    import time as _t
+    from socagent.tools.registry import Permission, Tool
+    from pydantic import BaseModel
+
+    class NoArgs(BaseModel):
+        pass
+
+    model = ScriptedModel([
+        ModelResponse(None, [ToolCall("1", "slow_lookup", {})]),
+        ModelResponse(None, [ToolCall("2", "submit_triage", {
+            "verdict": "needs_human", "confidence": 0.2, "severity": "medium",
+            "summary": "Lookup timed out; a human should check this alert.",
+            "evidence": [{"claim": "the lookup tool timed out", "source_tool": "facts"}]})]),
+    ])
+    agent, _ = build_agent(model)
+    agent.registry.register(Tool("slow_lookup", "never answers", NoArgs, lambda: _t.sleep(5), Permission.READ))
+    agent.tool_timeout = 0.2
+    start = _t.monotonic()
+    run = agent.run("F-10", "sys", "user")
+    assert _t.monotonic() - start < 2
+    assert run.tool_calls[0]["output"]["error"] == "TimeoutError"

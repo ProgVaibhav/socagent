@@ -13,21 +13,40 @@ from pydantic import BaseModel, Field
 
 from .registry import Tool
 
-# CloudTrail eventName -> (finding, ATT&CK, weight)
+# CloudTrail eventName -> (finding, ATT&CK technique, status, weight)
+#
+# status says what ONE event can prove:
+#   observed  - the API call IS the technique (stopping a trail is impairing cloud logs)
+#   suspected - consistent with the technique, but the event alone does not show it happened
+#   precursor - a configuration change that enables a technique; it is not the technique
+# A precursor or suspected finding is upgraded only by supporting telemetry: for example S3
+# data events showing anonymous GetObject calls (T1530), or the external account copying the
+# shared snapshot (T1537).
 RISKY_API = {
-    "StopLogging": ("CloudTrail logging stopped", "T1562.008", 4),
-    "DeleteTrail": ("CloudTrail trail deleted", "T1562.008", 4),
-    "UpdateTrail": ("CloudTrail trail modified", "T1562.008", 2),
-    "PutEventSelectors": ("CloudTrail event selectors changed", "T1562.008", 2),
-    "CreateAccessKey": ("New long-lived access key created", "T1098.001", 2),
-    "CreateUser": ("New IAM user created", "T1136.003", 2),
-    "AttachUserPolicy": ("Policy attached directly to a user", "T1098", 2),
-    "PutUserPolicy": ("Inline policy added to a user", "T1098", 2),
-    "CreateLoginProfile": ("Console password set for a user", "T1098", 2),
-    "PutBucketPolicy": ("S3 bucket policy changed", "T1530", 1),
-    "PutBucketAcl": ("S3 bucket ACL changed", "T1530", 1),
-    "DeletePublicAccessBlock": ("S3 Block Public Access removed", "T1530", 3),
-    "ModifySnapshotAttribute": ("EBS snapshot sharing changed", "T1537", 3),
+    "StopLogging": ("CloudTrail logging stopped", "T1562.008", "observed", 4),
+    "DeleteTrail": ("CloudTrail trail deleted", "T1562.008", "observed", 4),
+    "UpdateTrail": ("CloudTrail trail modified", "T1562.008", "suspected", 2),
+    "PutEventSelectors": ("CloudTrail event selectors changed", "T1562.008", "suspected", 2),
+    "CreateAccessKey": ("New long-lived access key created", "T1098.001", "observed", 2),
+    "CreateUser": ("New IAM user created", "T1136.003", "observed", 2),
+    "AttachUserPolicy": ("Policy attached directly to a user", "T1098", "observed", 2),
+    "PutUserPolicy": ("Inline policy added to a user", "T1098", "observed", 2),
+    "CreateLoginProfile": ("Console password set for a user", "T1098", "observed", 2),
+    "PutBucketPolicy": ("S3 bucket policy changed", None, "precursor", 1),
+    "PutBucketAcl": ("S3 bucket ACL changed", None, "precursor", 1),
+    "DeletePublicAccessBlock": ("S3 Block Public Access removed: storage can now be made public",
+                                None, "precursor", 3),
+    "ModifySnapshotAttribute": ("EBS snapshot sharing changed: possible preparation to transfer "
+                                "data to another account", "T1537", "suspected", 3),
+}
+# What would upgrade a precursor or suspected finding, shown to the analyst and the model.
+NEEDS = {
+    "DeletePublicAccessBlock": "S3 data events showing access to objects from outside the account (T1530)",
+    "PutBucketPolicy": "S3 data events showing access to objects from outside the account (T1530)",
+    "PutBucketAcl": "S3 data events showing access to objects from outside the account (T1530)",
+    "ModifySnapshotAttribute": "the account the snapshot was shared with, and evidence it copied it (T1537)",
+    "UpdateTrail": "what changed: a new destination bucket or disabled logging (T1562.008)",
+    "PutEventSelectors": "whether management or data events were excluded (T1562.008)",
 }
 ADMIN_POLICIES = {"arn:aws:iam::aws:policy/AdministratorAccess", "arn:aws:iam::aws:policy/IAMFullAccess"}
 
@@ -40,33 +59,53 @@ def analyze_cloudtrail_event(event: dict[str, Any]) -> dict[str, Any]:
     name = event.get("eventName", "")
     params = event.get("requestParameters") or {}
     ident = event.get("userIdentity") or {}
+    denied = event.get("errorCode") in ("AccessDenied", "Client.UnauthorizedOperation")
     findings = []
     if name in RISKY_API:
-        what, tech, w = RISKY_API[name]
-        findings.append({"finding": what, "attack": tech, "weight": w})
+        what, tech, status, w = RISKY_API[name]
+        f = {"finding": what, "attack": tech, "status": status, "weight": w}
+        if name in NEEDS:
+            f["needs"] = NEEDS[name]
+        findings.append(f)
     if name in ("AttachUserPolicy", "AttachRolePolicy") and params.get("policyArn") in ADMIN_POLICIES:
         findings.append({"finding": f"Administrator policy attached: {params['policyArn']}",
-                         "attack": "T1098", "weight": 3})
+                         "attack": "T1098", "status": "observed", "weight": 3})
     if name in ("PutBucketPolicy",) and '"Principal":"*"' in json.dumps(params.get("bucketPolicy", {})).replace(" ", ""):
-        findings.append({"finding": "Bucket policy grants access to everyone (Principal *)",
-                         "attack": "T1530", "weight": 3})
+        findings.append({"finding": "Bucket policy grants access to everyone (Principal *): exposure, "
+                         "not yet evidence of data access", "attack": None, "status": "precursor",
+                         "needs": NEEDS["PutBucketPolicy"], "weight": 3})
     if name == "ConsoleLogin":
         mfa = (event.get("additionalEventData") or {}).get("MFAUsed")
         if ident.get("type") == "Root":
-            findings.append({"finding": "Root account console sign-in", "attack": "T1078.004", "weight": 3})
+            findings.append({"finding": "Root account console sign-in", "attack": "T1078.004",
+                             "status": "suspected", "weight": 3})
         if mfa == "No":
-            findings.append({"finding": "Console sign-in without MFA", "attack": "T1078.004", "weight": 2})
-    if event.get("errorCode") in ("AccessDenied", "Client.UnauthorizedOperation"):
-        findings.append({"finding": "Call was denied (possible permission probing)", "attack": None, "weight": 1})
+            findings.append({"finding": "Console sign-in without MFA", "attack": "T1078.004",
+                             "status": "suspected", "weight": 2})
+    if denied:
+        # A refused call did not happen: nothing above is observed, only attempted.
+        for f in findings:
+            if f["status"] == "observed":
+                f["status"] = "attempted"
+        findings.append({"finding": "Call was denied (possible permission probing)", "attack": None,
+                         "status": "context", "weight": 1})
     score = sum(f["weight"] for f in findings)
     return {"event": name, "actor": ident.get("arn") or ident.get("userName"),
-            "source_ip": event.get("sourceIPAddress"), "findings": findings, "risk_score": score,
+            "source_ip": event.get("sourceIPAddress"), "succeeded": not denied,
+            "findings": findings, "risk_score": score,
+            "observed_techniques": sorted({f["attack"] for f in findings
+                                           if f["attack"] and f["status"] == "observed"}),
+            "suspected_techniques": sorted({f["attack"] for f in findings
+                                            if f["attack"] and f["status"] in ("suspected", "attempted")}),
             "assessment": "high" if score >= 4 else "medium" if score >= 2 else "low"}
 
 
 # OAuth scopes that let an app read or send mail, read files, or act broadly.
 HIGH_RISK_SCOPES = {"Mail.Read", "Mail.ReadWrite", "Mail.Send", "Files.Read.All", "Files.ReadWrite.All",
-                    "Sites.Read.All", "Directory.ReadWrite.All", "offline_access", "full_access_as_user"}
+                    "Sites.Read.All", "Directory.ReadWrite.All", "full_access_as_user"}
+# offline_access is NOT on that list. It lets an app get refresh tokens, which almost every
+# legitimate long-running app needs. It only matters as persistence context when it comes
+# with sensitive delegated permissions.
 
 
 class ConsentArgs(BaseModel):
@@ -90,7 +129,9 @@ def score_oauth_consent(app_name: str, publisher_verified: bool, scopes: list[st
     if tenant_users_consented <= 2:
         reasons.append("almost no one else in the tenant uses this app"); score += 1
     if "offline_access" in scopes and risky:
-        reasons.append("offline_access keeps access after password reset"); score += 1
+        # Context, not proof: refresh tokens let sensitive access outlast the user's session.
+        reasons.append("offline_access with sensitive scopes: access can persist via refresh tokens "
+                       "until the grant is revoked"); score += 1
     return {"app": app_name, "risk_score": score, "reasons": reasons,
             "assessment": "high" if score >= 6 else "medium" if score >= 3 else "low",
             "attack": "T1528" if score >= 6 else None,

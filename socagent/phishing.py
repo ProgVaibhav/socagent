@@ -137,11 +137,24 @@ def apply_guardrails(result: TriageResult, facts: dict[str, Any]) -> TriageResul
     })
 
 
+def fact_observables(facts: dict[str, Any]) -> set[str]:
+    """The indicators code extracted from the email. Evidence citing "facts" may name only these."""
+    obs = set(facts.get("domains", [])) | set(facts.get("urls", []))
+    for k in ("from_address", "from_domain", "reply_to", "reply_to_domain"):
+        if facts.get(k):
+            obs.add(facts[k])
+    for a in facts.get("attachments", []):
+        for k in ("sha256", "filename"):
+            if a.get(k):
+                obs.add(a[k])
+    return {o for o in obs if o}
+
+
 def triage_phishing(agent: Agent, alert_id: str, raw_email: str,
                     protected_domains: list[str], intel=None) -> tuple[AgentRun, dict[str, Any]]:
     facts = build_facts(raw_email, protected_domains, intel)
     system, user = build_prompt(facts)
-    run = agent.run(alert_id, system, user)
+    run = agent.run(alert_id, system, user, trusted_observables=fact_observables(facts))
     run.result = apply_guardrails(run.result, facts)
     return run, facts
 

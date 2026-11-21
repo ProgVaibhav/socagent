@@ -1,0 +1,12 @@
+[
+ {"query": "MFA push fatigue repeated prompts", "expected": "identity.md#mfa-fatigue"},
+ {"query": "user approved push after many denials", "expected": "identity.md#mfa-fatigue"},
+ {"query": "impossible travel sign-in two countries", "expected": "identity.md#impossible-travel"},
+ {"query": "credential phishing containment", "expected": "phishing.md#credential-phishing-containment"},
+ {"query": "malicious attachment containment", "expected": "phishing.md#malware-attachment-containment"},
+ {"query": "marketing newsletter benign email", "expected": "phishing.md#benign-and-marketing-email"},
+ {"query": "encoded powershell command line", "expected": "endpoint.md#encoded-powershell"},
+ {"query": "word spawning scripting engine", "expected": "endpoint.md#office-spawning-scripting-engines"},
+ {"query": "kubernetes pod crashloop", "expected": null},
+ {"query": "printer out of toner", "expected": null}
+]

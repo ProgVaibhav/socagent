@@ -1,0 +1,18 @@
+{
+  "ip": {
+    "185.220.101.47": {"verdict": "malicious", "tags": ["tor-exit", "credential-stuffing"], "first_seen": "2025-11-02"},
+    "45.155.205.233": {"verdict": "malicious", "tags": ["phishing-kit-hosting"], "first_seen": "2026-10-28"},
+    "8.8.8.8": {"verdict": "benign", "tags": ["public-dns"], "first_seen": "2010-01-01"}
+  },
+  "domain": {
+    "examp1e-corp.com": {"verdict": "malicious", "tags": ["credential-phishing", "aitm-kit"], "created": "2026-11-17"},
+    "secure-examplecorp-login.net": {"verdict": "suspicious", "tags": ["newly-registered"], "created": "2026-11-18"},
+    "docusign.net": {"verdict": "benign", "tags": ["saas"], "created": "2003-05-12"},
+    "example-corp.com": {"verdict": "benign", "tags": ["own-domain"], "created": "2001-03-10"},
+    "hr-portal.example-corp.com": {"verdict": "benign", "tags": ["own-domain"], "created": "2001-03-10"},
+    "newsletter.vendor-weekly.com": {"verdict": "benign", "tags": ["marketing"], "created": "2014-06-01"}
+  },
+  "sha256": {
+    "a3f1c2e4b5d6978812345678901234567890abcdef1234567890abcdef123456": {"verdict": "malicious", "family": "QakBot loader", "tags": ["macro", "loader"]}
+  }
+}

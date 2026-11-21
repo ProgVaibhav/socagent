@@ -1,0 +1,13 @@
+From: "Vendor Weekly" <news@newsletter.vendor-weekly.com>
+To: priya.shah@example-corp.com
+Subject: This week in cloud security: 5 things to read
+Date: Wed, 18 Nov 2026 16:00:00 +0000
+Authentication-Results: mx.example-corp.com; spf=pass smtp.mailfrom=newsletter.vendor-weekly.com; dkim=pass header.d=vendor-weekly.com; dmarc=pass
+Content-Type: text/plain; charset="utf-8"
+
+Hello,
+
+Here are this week's top stories in cloud security.
+Read more: https://newsletter.vendor-weekly.com/issue/412
+
+Unsubscribe: https://newsletter.vendor-weekly.com/unsubscribe

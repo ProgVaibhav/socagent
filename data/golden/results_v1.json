@@ -1,0 +1,51 @@
+{
+  "A. Rules baseline (playbook)": {
+    "precision": 0.842,
+    "recall": 0.762,
+    "escalation_rate": 0.06,
+    "critical_misses": [
+      "G-LOOKNEW-00",
+      "G-LOOKNEW-01",
+      "G-OWNDOM-00",
+      "G-OWNDOM-01",
+      "G-OWNDOM-02"
+    ],
+    "false_alarms": [
+      "G-LEGIT-NODMARC-00",
+      "G-LEGIT-NODMARC-01",
+      "G-LEGIT-NODMARC-02"
+    ],
+    "passes_gate": false
+  },
+  "B. Rules + escalate unknown domains": {
+    "precision": 0.875,
+    "recall": 1.0,
+    "escalation_rate": 0.16,
+    "critical_misses": [],
+    "false_alarms": [
+      "G-LEGIT-NODMARC-00",
+      "G-LEGIT-NODMARC-01",
+      "G-LEGIT-NODMARC-02"
+    ],
+    "passes_gate": true
+  },
+  "C. Hijacked model + guardrails": {
+    "precision": 1.0,
+    "recall": 0.524,
+    "escalation_rate": 0.28,
+    "critical_misses": [
+      "G-LOOKNEW-00",
+      "G-LOOKNEW-01",
+      "G-MAL-00",
+      "G-MAL-01",
+      "G-MAL-02",
+      "G-OWNDOM-00",
+      "G-OWNDOM-01",
+      "G-OWNDOM-02",
+      "G-HIJACK-00",
+      "G-HIJACK-01"
+    ],
+    "false_alarms": [],
+    "passes_gate": false
+  }
+}

@@ -1,0 +1,106 @@
+[
+ {
+  "id": "ALERT-1001",
+  "time": "2026-11-19T08:14:00",
+  "source": "phishing_mailbox",
+  "title": "Reported credential phishing from examp1e-corp.com",
+  "entities": {
+   "user": [
+    "priya.shah@example-corp.com"
+   ],
+   "domain": [
+    "examp1e-corp.com"
+   ]
+  },
+  "verdict": "malicious",
+  "attack_techniques": [
+   "T1566.002"
+  ],
+  "tenant": "example-corp"
+ },
+ {
+  "id": "ALERT-1007",
+  "time": "2026-11-19T08:31:00",
+  "source": "idp",
+  "title": "6 MFA push prompts in 7 minutes, last approved",
+  "entities": {
+   "user": [
+    "priya.shah@example-corp.com"
+   ],
+   "ip": [
+    "185.220.101.47"
+   ]
+  },
+  "verdict": "malicious",
+  "attack_techniques": [
+   "T1621"
+  ],
+  "tenant": "example-corp"
+ },
+ {
+  "id": "ALERT-1012",
+  "time": "2026-11-19T08:52:00",
+  "source": "email_security",
+  "title": "New inbox rule forwards 'invoice' mail externally",
+  "entities": {
+   "user": [
+    "priya.shah@example-corp.com"
+   ]
+  },
+  "verdict": "suspicious",
+  "attack_techniques": [
+   "T1114.003"
+  ],
+  "tenant": "example-corp"
+ },
+ {
+  "id": "ALERT-0990",
+  "time": "2026-11-18T22:05:00",
+  "source": "edr",
+  "title": "Unsigned binary on BUILD-07",
+  "entities": {
+   "host": [
+    "BUILD-07"
+   ],
+   "user": [
+    "ci-runner"
+   ]
+  },
+  "verdict": "benign",
+  "attack_techniques": [],
+  "tenant": "example-corp"
+ },
+ {
+  "id": "ALERT-1020",
+  "time": "2026-11-19T09:10:00",
+  "source": "phishing_mailbox",
+  "title": "Reported vendor newsletter",
+  "entities": {
+   "user": [
+    "arjun.mehta@example-corp.com"
+   ],
+   "domain": [
+    "cloudweekly-news.com"
+   ]
+  },
+  "verdict": "benign",
+  "attack_techniques": [],
+  "tenant": "example-corp"
+ },
+ {
+  "id": "ALERT-2001",
+  "tenant": "other-customer",
+  "time": "2026-11-19T08:40:00",
+  "source": "idp",
+  "title": "Other customer's alert mentioning the same user string",
+  "entities": {
+   "user": [
+    "priya.shah@example-corp.com"
+   ]
+  },
+  "verdict": "malicious",
+  "attack_techniques": [
+   "T1621"
+  ]
+ }
+]

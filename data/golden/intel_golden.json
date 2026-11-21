@@ -1,0 +1,165 @@
+{
+  "domain": {
+    "cloudweekly-news.com": {
+      "created": "2010-03-01",
+      "tags": [
+        "marketing"
+      ],
+      "verdict": "benign"
+    },
+    "devtools-digest.com": {
+      "created": "2011-03-01",
+      "tags": [
+        "marketing"
+      ],
+      "verdict": "benign"
+    },
+    "examp1e-corp.com": {
+      "created": "2026-11-10",
+      "tags": [
+        "credential-phishing"
+      ],
+      "verdict": "malicious"
+    },
+    "example-c0rp.com": {
+      "created": "2026-11-11",
+      "tags": [
+        "credential-phishing"
+      ],
+      "verdict": "malicious"
+    },
+    "example-corp-sso.com": {
+      "created": "2026-11-13",
+      "tags": [
+        "credential-phishing"
+      ],
+      "verdict": "malicious"
+    },
+    "example-corp.co": {
+      "created": "2026-11-15",
+      "tags": [
+        "credential-phishing"
+      ],
+      "verdict": "malicious"
+    },
+    "examplecorp-login.com": {
+      "created": "2026-11-14",
+      "tags": [
+        "credential-phishing"
+      ],
+      "verdict": "malicious"
+    },
+    "exarnple-corp.com": {
+      "created": "2026-11-12",
+      "tags": [
+        "credential-phishing"
+      ],
+      "verdict": "malicious"
+    },
+    "fintech-brief.com": {
+      "created": "2013-03-01",
+      "tags": [
+        "marketing"
+      ],
+      "verdict": "benign"
+    },
+    "freight-notices.com": {
+      "created": "2026-10-30",
+      "tags": [],
+      "verdict": "unknown"
+    },
+    "hr-insights-mag.com": {
+      "created": "2012-03-01",
+      "tags": [
+        "marketing"
+      ],
+      "verdict": "benign"
+    },
+    "intranet.example-corp.com": {
+      "created": "2001-03-10",
+      "tags": [
+        "own-domain"
+      ],
+      "verdict": "benign"
+    },
+    "invoice-viewer-secure.com": {
+      "created": "2026-11-15",
+      "tags": [
+        "phishing"
+      ],
+      "verdict": "malicious"
+    },
+    "local-catering-co.com": {
+      "created": "2016-03-11",
+      "tags": [
+        "small-business"
+      ],
+      "verdict": "benign"
+    },
+    "office-supplies-hub.com": {
+      "created": "2016-03-01",
+      "tags": [
+        "marketing"
+      ],
+      "verdict": "benign"
+    },
+    "partner-logistics.com": {
+      "created": "2012-05-05",
+      "tags": [
+        "partner"
+      ],
+      "verdict": "benign"
+    },
+    "print-shop-online.com": {
+      "created": "2016-04-11",
+      "tags": [
+        "small-business"
+      ],
+      "verdict": "benign"
+    },
+    "secops-roundup.com": {
+      "created": "2014-03-01",
+      "tags": [
+        "marketing"
+      ],
+      "verdict": "benign"
+    },
+    "smallsupplier-tools.com": {
+      "created": "2016-02-11",
+      "tags": [
+        "small-business"
+      ],
+      "verdict": "benign"
+    },
+    "travel-deals-mail.com": {
+      "created": "2015-03-01",
+      "tags": [
+        "marketing"
+      ],
+      "verdict": "benign"
+    }
+  },
+  "sha256": {
+    "292e51b6112af4c2be19fbf39488e57bfbbeb3d456123870dfcfc4ddd45e0e1b": {
+      "family": "loader",
+      "tags": [
+        "macro"
+      ],
+      "verdict": "malicious"
+    },
+    "950d2904ee537162eed9750e2a961784b7bab363e481ac8d5d60d8081b5f075e": {
+      "family": "loader",
+      "tags": [
+        "macro"
+      ],
+      "verdict": "malicious"
+    },
+    "ec6ffd86646f62640ffdf4ffd0c38b1fb021d5517ae90ce0ec686f623e6dc474": {
+      "family": "loader",
+      "tags": [
+        "macro"
+      ],
+      "verdict": "malicious"
+    }
+  }
+}
